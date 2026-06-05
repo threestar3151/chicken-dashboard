@@ -58,12 +58,19 @@ def load_sheet(sheet_name):
     return pd.read_csv(StringIO(r.text))
 
 @st.cache_data(ttl=300)
-def get_store_list():
+def get_part_store_mapping():
     try:
         df_summary = load_sheet("요약")
-        return df_summary['점포명'].unique().tolist()
-    except:
-        return ["강남본점", "서초점", "역삼점"] # 시트 연동 실패시 임시 점포 목록
+        # 구글 시트의 '파트' 열을 기준으로 점포들을 그룹화하여 딕셔너리로 만듭니다.
+        mapping = df_summary.groupby('파트')['점포명'].unique().apply(list).to_dict()
+        return mapping
+    except Exception as e:
+        # 시트 연동 실패나 '파트' 열이 없을 경우를 대비한 임시 파트/점포 목록
+        return {
+            "강남파트": ["강남본점", "서초점", "역삼점"],
+            "강북파트": ["홍대본점", "신촌점", "합정점"],
+            "부산파트": ["서면점", "해운대점", "광안리점"]
+        }
 
 @st.cache_data(ttl=300)
 def get_store_data(store_name):
@@ -115,9 +122,16 @@ def get_store_data(store_name):
 # ── 4. UI 렌더링 ───────────────────────────────────────────
 st.title("🍗 치킨25 튀김 레이더")
 
-# 점포 선택 UI 추가
-store_list = get_store_list()
-selected_store = st.selectbox("🏬 분석할 점포를 선택하세요:", store_list)
+# 파트 및 점포 선택 UI 추가 (2단 컬럼 구성)
+part_store_map = get_part_store_mapping()
+part_list = list(part_store_map.keys())
+
+col_sel1, col_sel2 = st.columns(2)
+with col_sel1:
+    selected_part = st.selectbox("🏢 소속 파트를 선택하세요:", part_list)
+with col_sel2:
+    store_list = part_store_map[selected_part]
+    selected_store = st.selectbox("🏬 분석할 점포를 선택하세요:", store_list)
 
 # 데이터 로드
 data = get_store_data(selected_store)
