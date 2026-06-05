@@ -33,7 +33,23 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── 2. 데이터 로딩 (구글 시트 연동) ──────────────────────────
+# ── 2. 비밀번호 인증 로직 ───────────────────────────────────────────
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    st.title("🔒 치킨25 튀김 레이더 시스템")
+    st.markdown("보안을 위해 비밀번호를 입력해주세요.")
+    pwd = st.text_input("비밀번호", type="password")
+    if st.button("접속하기"):
+        if pwd == "gs25":
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("비밀번호가 틀렸습니다.")
+    st.stop() # 인증되지 않으면 여기서 실행을 멈춤
+
+# ── 3. 데이터 로딩 (구글 시트 연동) ──────────────────────────
 @st.cache_data(ttl=300)
 def load_sheet(sheet_name):
     """구글 시트의 특정 탭(시트명)을 불러옵니다."""
@@ -42,10 +58,17 @@ def load_sheet(sheet_name):
     return pd.read_csv(StringIO(r.text))
 
 @st.cache_data(ttl=300)
+def get_store_list():
+    try:
+        df_summary = load_sheet("요약")
+        return df_summary['점포명'].unique().tolist()
+    except:
+        return ["강남본점", "서초점", "역삼점"] # 시트 연동 실패시 임시 점포 목록
+
+@st.cache_data(ttl=300)
 def get_store_data(store_name):
     try:
         # 📌 1. 실제 구글 시트에서 데이터 읽어오기 시도
-        # 시트명(탭)을 '요약', '시간', '품목' 3개로 구분하여 데이터를 불러옵니다.
         df_summary = load_sheet("요약")
         df_time = load_sheet("시간")
         df_item = load_sheet("품목")
@@ -68,14 +91,34 @@ def get_store_data(store_name):
             "품목매출": store_item['품목매출'].astype(int).tolist()
         }
     except Exception as e:
-        # 📌 2. 오류 발생 시 (시트 구조가 안 맞거나 연결 실패) 화면이 깨지지 않도록 방어
-        # 디버깅을 위해 무슨 에러인지 확인할 수 있게 터미널에 출력합니다.
-        print(f"⚠️ 구글 시트 연동 실패. 시트 양식을 확인해주세요. (에러: {e})")
-        
-        np.random.seed(len(store_name)) # 점포명에 따라 고정된 랜덤값 생성
-        
-        # [인사이트 3 & 4 용] 요약 데이터
+        # 📌 2. 오류 발생 시 (시트 구조가 안 맞거나 연결 실패) 임시 데이터 반환 (화면 깨짐 방지)
+        print(f"⚠️ 구글 시트 연동 실패. (에러: {e})")
+        np.random.seed(len(store_name)) 
         total_sales_25 = np.random.randint(1500000, 2500000)
+        total_sales_26 = int(total_sales_25 * np.random.uniform(0.9, 1.2))
+        chicken_25 = int(total_sales_25 * np.random.uniform(0.05, 0.1))
+        chicken_26 = int(chicken_25 * np.random.uniform(0.8, 1.5))
+        
+        return {
+            "총매출_25": total_sales_25,
+            "총매출_26": total_sales_26,
+            "치킨_25": chicken_25,
+            "치킨_26": chicken_26,
+            "운영율": np.random.uniform(60, 95),
+            "판매율": np.random.uniform(70, 99),
+            "시간": list(range(9, 24)),
+            "객수": np.random.randint(10, 80, size=15).tolist(),
+            "품목명": ["쏜살치킨", "바삭매콤치킨", "점보닭다리", "바삭통다리", "치킨꼬치"],
+            "품목매출": sorted(np.random.randint(50000, 300000, size=5).tolist(), reverse=True)
+        }
+
+# ── 4. UI 렌더링 ───────────────────────────────────────────
+st.title("🍗 치킨25 튀김 레이더")
+
+# 점포 선택 UI 추가
+store_list = get_store_list()
+selected_store = st.selectbox("🏬 분석할 점포를 선택하세요:", store_list)
+
 # 데이터 로드
 data = get_store_data(selected_store)
 
@@ -86,7 +129,7 @@ def calc_growth(v25, v26):
 total_growth = calc_growth(data["총매출_25"], data["총매출_26"])
 chicken_growth = calc_growth(data["치킨_25"], data["치킨_26"])
 
-# ── 4. [인사이트 3 & 4] 핵심 KPI 및 팩폭 코칭 ────────────────────
+# ── 5. [인사이트 3 & 4] 핵심 KPI 및 팩폭 코칭 ────────────────────
 st.markdown('<div class="section-title">📊 종합 실적 및 점포 진단</div>', unsafe_allow_html=True)
 
 c1, c2, c3, c4 = st.columns(4)
@@ -131,7 +174,7 @@ elif total_growth < 0 and chicken_growth > 0:
     coach_msg = f"💡 <b>치킨이 효자입니다!</b> 점포 전체 매출이 빠지는 상황에서도 치킨 매출이 <b>{chicken_growth:.1f}% 상승</b>하며 방어해주고 있습니다. 지금 잘 나가는 치킨 품목의 복수 진열을 늘려 객단가를 더 끌어올리세요."
     coach_class = "coach-good"
 elif total_growth < 0 and chicken_growth < 0:
-    coach_msg = f"⚠️ <b>전면적인 리프레시 필요!</b> 전체 매출과 치킨 매출이 동반 하락 중입니다. 시간대별 객수 데이터를 확인하고 가장 손님이 많은 피크타임(Top 1)에 승부수를 띄워야 합니다. 냄새 마케팅(튀기는 냄새)으로 발길을 잡으세요."
+    coach_msg = f"⚠️ <b>전면적인 리프레시 필요!</b> 전체 매출과 치킨 매출이 동반 하락 중입니다. 시간대별 객수 데이터를 확인하고 가장 손님이 가장 많은 피크타임(Top 1)에 승부수를 띄워야 합니다. 냄새 마케팅(튀기는 냄새)으로 발길을 잡으세요."
     coach_class = "coach-warn"
 else:
     coach_msg = f"🔥 <b>완벽한 상승 기류!</b> 전체 매출과 치킨 매출이 모두 상승 중입니다. 현재의 조리 스케줄을 유지하시되, 신상품(예: 새로운 맛 쏜살치킨)을 도입해 추가 매출을 노려보세요."
@@ -141,14 +184,14 @@ st.markdown(f'<div class="coach-card {coach_class}">{coach_msg}</div>', unsafe_a
 
 st.markdown("<hr style='border: 1px dashed #DDD;'>", unsafe_allow_html=True)
 
-# ── 5. [인사이트 1 & 2] 하단 분석 차트 ────────────────────────────
+# ── 6. [인사이트 1 & 2] 하단 분석 차트 ────────────────────────────
 col_left, col_right = st.columns([1.2, 1])
 
 # --- 시간대별 객수 및 조리 타이밍 코칭 ---
 with col_left:
     st.markdown('<div class="section-title">⏱️ 시간대별 방문객 및 조리 타이밍</div>', unsafe_allow_html=True)
     
-    # 피크 타임 찾기 (객수가 가장 많은 시간 Top 2)
+    # 피크 타임 찾기 (객수가 가장 많은 시간)
     max_idx = np.argmax(data["객수"])
     peak_hour_1 = data["시간"][max_idx]
     
