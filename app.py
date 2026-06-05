@@ -95,11 +95,19 @@ def get_store_data(store_name):
             "시간": store_time['시간'].astype(int).tolist(),
             "객수": store_time['객수'].astype(int).tolist(),
             "품목명": store_item['품목명'].astype(str).tolist(),
-            "품목매출": store_item['품목매출'].astype(int).tolist()
+            "품목매출": store_item['품목매출'].astype(int).tolist(),
+            "is_mock": False # 실제 데이터 로드 성공 플래그
         }
     except Exception as e:
         # 📌 2. 오류 발생 시 (시트 구조가 안 맞거나 연결 실패) 임시 데이터 반환 (화면 깨짐 방지)
         print(f"⚠️ 구글 시트 연동 실패. (에러: {e})")
+        
+        # 점포별로 다른 가짜 품목이 나오도록 섞어줍니다 (임시 데이터용)
+        import random
+        all_items = ["쏜살치킨", "바삭매콤치킨", "점보닭다리", "바삭통다리", "치킨꼬치", "매콤순살꼬치", "바삭치즈볼", "한마리치킨(팩)", "안심텐더", "소떡소떡"]
+        random.seed(store_name) 
+        mock_items = random.sample(all_items, 5)
+        
         np.random.seed(len(store_name)) 
         total_sales_25 = np.random.randint(1500000, 2500000)
         total_sales_26 = int(total_sales_25 * np.random.uniform(0.9, 1.2))
@@ -115,8 +123,9 @@ def get_store_data(store_name):
             "판매율": np.random.uniform(70, 99),
             "시간": list(range(9, 24)),
             "객수": np.random.randint(10, 80, size=15).tolist(),
-            "품목명": ["쏜살치킨", "바삭매콤치킨", "점보닭다리", "바삭통다리", "치킨꼬치"],
-            "품목매출": sorted(np.random.randint(50000, 300000, size=5).tolist(), reverse=True)
+            "품목명": mock_items,
+            "품목매출": sorted(np.random.randint(50000, 300000, size=5).tolist(), reverse=True),
+            "is_mock": True # 임시 데이터 상태 플래그
         }
 
 # ── 4. UI 렌더링 ───────────────────────────────────────────
@@ -135,6 +144,10 @@ with col_sel2:
 
 # 데이터 로드
 data = get_store_data(selected_store)
+
+# 구글 시트 연동 실패 알림 (에러 디버깅용)
+if data.get("is_mock"):
+    st.warning("⚠️ 현재 구글 시트의 구조가 맞지 않아 **임시 테스트 데이터**를 보여주고 있습니다. 시트에 `요약`, `시간`, `품목` 탭이 올바르게 존재하는지 확인해 주세요!")
 
 # 증감률 계산 함수
 def calc_growth(v25, v26):
@@ -248,7 +261,7 @@ with col_right:
         x=top5_sales[::-1],
         orientation='h',
         marker=dict(color='#FF5733', opacity=0.8), # 치킨 느낌의 주황/빨강
-        text=[f"{v:,}원" for v in top5_sales[::-1]], textposition='inside',
+        text=[f"일매출 {v:,}원" for v in top5_sales[::-1]], textposition='inside',
         insidetextanchor='middle', textfont=dict(color='white', weight='bold')
     ))
     
@@ -259,8 +272,9 @@ with col_right:
     )
     st.plotly_chart(fig_items, use_container_width=True)
     
-    st.markdown(f"""
-    <div style="padding-left:10px; font-size:0.95rem; color:#555;">
-        💡 <b>코칭 팁:</b> 1위 상품인 <b>{top5_items[0]}</b>은 절대 결품이 나지 않도록 발주량을 늘리고, 피크타임 전에 반드시 전진 진열해 주세요.
-    </div>
-    """, unsafe_allow_html=True)
+    if len(top5_items) > 0:
+        st.markdown(f"""
+        <div style="padding-left:10px; font-size:0.95rem; color:#555;">
+            💡 <b>코칭 팁:</b> 1위 상품인 <b>{top5_items[0]}</b>은 절대 결품이 나지 않도록 발주량을 늘리고, 피크타임 전에 반드시 전진 진열해 주세요.
+        </div>
+        """, unsafe_allow_html=True)
