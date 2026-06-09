@@ -56,16 +56,13 @@ if not st.session_state.authenticated:
 # ── 3. 스마트 데이터 로딩 엔진 ──────────────────────────
 @st.cache_data(ttl=300)
 def load_sheet(sheet_name):
-    """다중 헤더 및 병합 셀을 똑똑하게 인식하여 데이터프레임으로 반환합니다."""
     url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
     r = requests.get(url, timeout=10)
     if r.status_code != 200 or "html" in r.text.lower():
         raise ValueError(f"'{sheet_name}' 시트를 찾을 수 없습니다.")
     
-    # 1. 데이터를 헤더 없이 모두 문자열로 로드
     df = pd.read_csv(StringIO(r.text), header=None, dtype=str)
     
-    # 2. '점포명'이 포함된 진짜 기준 행 찾기
     header_idx = None
     for i in range(min(10, len(df))):
         if '점포명' in df.iloc[i].fillna('').values:
@@ -73,13 +70,11 @@ def load_sheet(sheet_name):
             break
             
     if header_idx is not None:
-        # 3. 병합된 셀(빈칸)을 앞으로 당겨서 채우기 (ffill)
         if header_idx > 0:
             top_rows = df.iloc[0:header_idx].ffill(axis=1)
         else:
             top_rows = pd.DataFrame()
             
-        # 4. 여러 줄의 헤더 이름을 하나로 결합
         new_cols = []
         for col_idx in range(len(df.columns)):
             base_name = str(df.iloc[header_idx, col_idx])
@@ -88,7 +83,6 @@ def load_sheet(sheet_name):
             prefixes = []
             for r_idx in range(len(top_rows)):
                 val = str(top_rows.iloc[r_idx, col_idx])
-                # 'nan' 이나 필요 없는 메타데이터 제외
                 if val != 'nan' and val.strip() != '' and '*' not in val:
                     prefixes.append(val.strip())
             
@@ -100,7 +94,6 @@ def load_sheet(sheet_name):
         df.columns = new_cols
         df = df.iloc[header_idx + 1:].reset_index(drop=True)
     else:
-        # 일반적인 1줄짜리 헤더인 경우
         df.columns = df.iloc[0]
         df = df.iloc[1:].reset_index(drop=True)
         
@@ -110,12 +103,10 @@ def load_sheet(sheet_name):
 def get_part_store_mapping():
     try:
         df_sales = load_sheet("SALES")
-        # '파트' 열 찾기 (이름이 살짝 다를 수 있으므로 유연하게 검색)
         part_col = next((c for c in df_sales.columns if '파트' in c), None)
         store_col = next((c for c in df_sales.columns if '점포명' in c), None)
         
         if part_col and store_col:
-            # 결측치 제외
             valid_df = df_sales.dropna(subset=[part_col, store_col])
             mapping = valid_df.groupby(part_col)[store_col].unique().apply(list).to_dict()
             return mapping
@@ -125,7 +116,6 @@ def get_part_store_mapping():
         return {"시스템 파트": ["점포 로드 실패"]}
 
 def clean_num(val):
-    """문자열에서 쉼표를 제거하고 숫자로 변환합니다."""
     try:
         return float(str(val).replace(',', '').strip())
     except:
@@ -134,11 +124,11 @@ def clean_num(val):
 @st.cache_data(ttl=300)
 def get_store_data(store_name):
     try:
+        # 1. SALES 데이터 처리
         df_sales = load_sheet("SALES")
         store_col = next(c for c in df_sales.columns if '점포명' in c)
         store_sales = df_sales[df_sales[store_col] == store_name].iloc[0]
         
-        # ── 스마트 데이터 추출 (25년/26년 / 전체/치킨 필터링) ──
         total_25_cols = [c for c in df_sales.columns if '2025' in c and '전체' in c]
         total_26_cols = [c for c in df_sales.columns if '2026' in c and '전체' in c]
         total_2605_cols = [c for c in df_sales.columns if '202605' in c and '전체' in c]
@@ -147,7 +137,6 @@ def get_store_data(store_name):
         chk_26_cols = [c for c in df_sales.columns if '2026' in c and '치킨' in c]
         chk_2605_cols = [c for c in df_sales.columns if '202605' in c and '치킨' in c]
 
-        # 데이터 리스트를 숫자로 변환 후 평균 계산
         avg_total_25 = np.mean([clean_num(store_sales[c]) for c in total_25_cols]) if total_25_cols else 0
         avg_total_26 = np.mean([clean_num(store_sales[c]) for c in total_26_cols]) if total_26_cols else 0
         val_total_2605 = clean_num(store_sales[total_2605_cols[0]]) if total_2605_cols else 0
@@ -156,39 +145,63 @@ def get_store_data(store_name):
         avg_chk_26 = np.mean([clean_num(store_sales[c]) for c in chk_26_cols]) if chk_26_cols else 0
         val_chk_2605 = clean_num(store_sales[chk_2605_cols[0]]) if chk_2605_cols else 0
 
-        # 임시 기본값 (운영율/판매율은 operation 시트에 있을 것으로 추정, 우선 85로 둠)
         운영율 = 85.0 
         판매율 = 92.0
 
-        # ── 품목 (units) 데이터 처리 ──
+        # 2. 품목(units) 데이터 처리 (위치 대신 이름으로 스마트 검색)
         try:
             df_item = load_sheet("units")
-            u_store_col = next((c for c in df_item.columns if '점포명' in c), df_item.columns[0])
-            store_item_df = df_item[df_item[u_store_col] == store_name]
-            
-            item_col = next((c for c in store_item_df.columns if '품목' in c or '상품' in c), store_item_df.columns[1])
-            sales_col = next((c for c in store_item_df.columns if '매출' in c or '금액' in c), store_item_df.columns[2])
-            
-            # 숫자 정제 후 정렬
-            store_item_df['clean_sales'] = store_item_df[sales_col].apply(clean_num)
-            store_item_df = store_item_df.sort_values(by='clean_sales', ascending=False)
-            
-            품목명 = store_item_df[item_col].tolist()
-            품목매출 = store_item_df['clean_sales'].tolist()
+            u_store_col = next((c for c in df_item.columns if '점포명' in c), None)
+            if u_store_col:
+                store_item_df = df_item[df_item[u_store_col] == store_name]
+                
+                # '품목'이나 '상품' 단어가 들어간 열 찾기
+                item_cols = [c for c in store_item_df.columns if '품목' in c or '상품' in c or '메뉴' in c]
+                # '매출'이나 '금액' 단어가 들어간 열 찾기
+                sales_cols = [c for c in store_item_df.columns if '매출' in c or '금액' in c or '수량' in c]
+                
+                if item_cols and sales_cols:
+                    item_col = item_cols[0]
+                    sales_col = sales_cols[0]
+                    
+                    store_item_df['clean_sales'] = store_item_df[sales_col].apply(clean_num)
+                    store_item_df = store_item_df.sort_values(by='clean_sales', ascending=False)
+                    품목명 = store_item_df[item_col].tolist()
+                    품목매출 = store_item_df['clean_sales'].tolist()
+                else:
+                    품목명 = ["'품목명' 열을 시트에서 찾지 못했습니다"]
+                    품목매출 = [0]
+            else:
+                품목명 = ["점포명 불일치"]
+                품목매출 = [0]
         except:
             품목명 = ["데이터 부족"]
             품목매출 = [0]
 
-        # ── 시간 (time) 데이터 처리 ──
+        # 3. 시간(time) 데이터 처리 (위치 대신 이름으로 스마트 검색)
         try:
             df_time = load_sheet("time")
-            t_store_col = next((c for c in df_time.columns if '점포명' in c), df_time.columns[0])
-            store_time_df = df_time[df_time[t_store_col] == store_name]
-            시간 = store_time_df.iloc[:, 1].apply(clean_num).tolist()
-            객수 = store_time_df.iloc[:, 2].apply(clean_num).tolist()
+            t_store_col = next((c for c in df_time.columns if '점포명' in c), None)
+            if t_store_col:
+                store_time_df = df_time[df_time[t_store_col] == store_name]
+                
+                # '시간' 단어가 들어간 열 찾기
+                time_cols = [c for c in store_time_df.columns if '시간' in c or '시각' in c]
+                # '객수' 단어가 들어간 열 찾기
+                customer_cols = [c for c in store_time_df.columns if '객수' in c or '방문' in c]
+                
+                if time_cols and customer_cols:
+                    시간 = store_time_df[time_cols[0]].apply(clean_num).tolist()
+                    객수 = store_time_df[customer_cols[0]].apply(clean_num).tolist()
+                else:
+                    시간 = []
+                    객수 = []
+            else:
+                시간 = []
+                객수 = []
         except:
-            시간 = list(range(9, 24))
-            객수 = [0]*15
+            시간 = []
+            객수 = []
 
         return {
             "총매출_25평균": int(avg_total_25), "총매출_26평균": int(avg_total_26), "총매출_26년5월": int(val_total_2605),
@@ -238,55 +251,4 @@ with c1:
         <div class="kpi-value">{data['총매출_26평균']//10000:,}만원</div>
         <div class="{'kpi-delta-pos' if total_growth > 0 else 'kpi-delta-neg'}">{'▲' if total_growth > 0 else '▼'} {abs(total_growth):.1f}%</div>
         <div class="divider"></div>
-        <div style="font-size:0.95rem;"><b>'26년 5월:</b> {data['총매출_26년5월']//10000:,}만원</div>
-        <div class="sub-note">*산정기준: 25년/26년 월별 평균 비교</div>
-    </div>""", unsafe_allow_html=True)
-with c2:
-    st.markdown(f"""
-    <div class="kpi-card">
-        <div class="kpi-label">치킨25 일매출 흐름 (YoY)</div>
-        <div class="kpi-value">{data['치킨_26평균']//1000:,}천원</div>
-        <div class="{'kpi-delta-pos' if chicken_growth > 0 else 'kpi-delta-neg'}">{'▲' if chicken_growth > 0 else '▼'} {abs(chicken_growth):.1f}%</div>
-        <div class="divider"></div>
-        <div style="font-size:0.95rem;"><b>'26년 5월:</b> {data['치킨_26년5월']//1000:,}천원</div>
-        <div class="sub-note">*산정기준: 25년/26년 월별 평균 비교</div>
-    </div>""", unsafe_allow_html=True)
-with c3:
-    st.markdown(f"""<div class="kpi-card"><div class="kpi-label">튀김기 운영율</div>
-    <div class="kpi-value">{data['운영율']:.1f}%</div>
-    <div class="sub-note">목표: 85% 이상 유지</div></div>""", unsafe_allow_html=True)
-with c4:
-    st.markdown(f"""<div class="kpi-card"><div class="kpi-label">치킨 판매율</div>
-    <div class="kpi-value">{data['판매율']:.1f}%</div>
-    <div class="sub-note">기준: 튀긴 수량 대비 판매량</div></div>""", unsafe_allow_html=True)
-
-# ── 6. 기존 차트 영역 ──────────────────────────────────────────
-col_left, col_right = st.columns([1.2, 1])
-
-with col_left:
-    st.markdown('<div class="section-title">⏱️ 시간대별 방문객 및 조리 타이밍</div>', unsafe_allow_html=True)
-    if sum(data["객수"]) > 0:
-        max_idx = np.argmax(data["객수"])
-        peak_hour_1 = int(data["시간"][max_idx])
-        
-        fig_time = go.Figure()
-        colors = ['#FFC300' if i == max_idx else '#EAEAEA' for i in range(len(data["시간"]))]
-        fig_time.add_trace(go.Bar(x=[f"{int(h)}시" for h in data["시간"]], y=data["객수"], marker_color=colors, text=data["객수"], textposition='outside'))
-        fig_time.update_layout(plot_bgcolor='white', height=300, margin=dict(t=10, b=20, l=10, r=10), xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor='#F5F5F5'))
-        st.plotly_chart(fig_time, use_container_width=True)
-        st.markdown(f'<div class="highlight-box">👨‍🍳 <b>AI 조리 지시서:</b> {peak_hour_1}시에 가장 붐빕니다. {peak_hour_1 - 1}시 30분부터 선조리를 시작하세요!</div>', unsafe_allow_html=True)
-    else:
-        st.info("해당 점포의 시간대별 데이터가 없습니다.")
-
-with col_right:
-    st.markdown('<div class="section-title">🏆 우리 점포 치킨 베스트 Top 5</div>', unsafe_allow_html=True)
-    top5_items = data["품목명"][:5]
-    top5_sales = data["품목매출"][:5]
-    
-    if sum(top5_sales) > 0:
-        fig_items = go.Figure()
-        fig_items.add_trace(go.Bar(y=top5_items[::-1], x=top5_sales[::-1], orientation='h', marker=dict(color='#FF5733', opacity=0.8), text=[f"일매출 {int(v):,}원" for v in top5_sales[::-1]], textposition='inside', insidetextanchor='middle', textfont=dict(color='white', weight='bold')))
-        fig_items.update_layout(plot_bgcolor='white', height=300, margin=dict(t=10, b=20, l=10, r=10), xaxis=dict(showgrid=False, visible=False), yaxis=dict(showgrid=False, tickfont=dict(size=13, weight='bold')))
-        st.plotly_chart(fig_items, use_container_width=True)
-    else:
-        st.info("해당 점포의 품목별 매출 데이터가 없습니다.")
+        <div style="font-size:0.95rem;"><b>
