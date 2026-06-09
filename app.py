@@ -6,7 +6,7 @@ import requests
 from io import StringIO
 import random
 
-SPREADSHEET_ID = "1gtWPFhnszYK1VPgmiZQLtstHCltUM_6h" # 전달해주신 구글 시트 ID
+SPREADSHEET_ID = "1gtWPFhnszYK1VPgmiZQLtstHCltUM_6h"
 
 # ── 1. 페이지 설정 및 CSS ────────────────────────────────────────
 st.set_page_config(page_title="치킨25 튀김 레이더", page_icon="🍗", layout="wide")
@@ -37,7 +37,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── 2. 비밀번호 인증 로직 ───────────────────────────────────────────
+# ── 2. 비밀번호 인증 ───────────────────────────────────────────
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
@@ -53,130 +53,154 @@ if not st.session_state.authenticated:
             st.error("비밀번호가 틀렸습니다.")
     st.stop()
 
-# ── 3. 데이터 로딩 (구글 시트 연동) ──────────────────────────
+# ── 3. 스마트 데이터 로딩 엔진 ──────────────────────────
 @st.cache_data(ttl=300)
 def load_sheet(sheet_name):
-    """구글 시트의 특정 탭(시트명)을 불러옵니다."""
+    """다중 헤더 및 병합 셀을 똑똑하게 인식하여 데이터프레임으로 반환합니다."""
     url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
     r = requests.get(url, timeout=10)
     if r.status_code != 200 or "html" in r.text.lower():
-        raise ValueError(f"시트 '{sheet_name}'를 찾을 수 없거나 권한이 없습니다.")
-    df = pd.read_csv(StringIO(r.text))
-    df.columns = df.columns.str.strip() # 헤더의 불필요한 공백 제거 (에러 방지)
+        raise ValueError(f"'{sheet_name}' 시트를 찾을 수 없습니다.")
+    
+    # 1. 데이터를 헤더 없이 모두 문자열로 로드
+    df = pd.read_csv(StringIO(r.text), header=None, dtype=str)
+    
+    # 2. '점포명'이 포함된 진짜 기준 행 찾기
+    header_idx = None
+    for i in range(min(10, len(df))):
+        if '점포명' in df.iloc[i].fillna('').values:
+            header_idx = i
+            break
+            
+    if header_idx is not None:
+        # 3. 병합된 셀(빈칸)을 앞으로 당겨서 채우기 (ffill)
+        if header_idx > 0:
+            top_rows = df.iloc[0:header_idx].ffill(axis=1)
+        else:
+            top_rows = pd.DataFrame()
+            
+        # 4. 여러 줄의 헤더 이름을 하나로 결합
+        new_cols = []
+        for col_idx in range(len(df.columns)):
+            base_name = str(df.iloc[header_idx, col_idx])
+            if base_name == 'nan': base_name = f"Col_{col_idx}"
+            
+            prefixes = []
+            for r_idx in range(len(top_rows)):
+                val = str(top_rows.iloc[r_idx, col_idx])
+                # 'nan' 이나 필요 없는 메타데이터 제외
+                if val != 'nan' and val.strip() != '' and '*' not in val:
+                    prefixes.append(val.strip())
+            
+            if prefixes:
+                new_cols.append("_".join(prefixes) + "_" + base_name)
+            else:
+                new_cols.append(base_name)
+                
+        df.columns = new_cols
+        df = df.iloc[header_idx + 1:].reset_index(drop=True)
+    else:
+        # 일반적인 1줄짜리 헤더인 경우
+        df.columns = df.iloc[0]
+        df = df.iloc[1:].reset_index(drop=True)
+        
     return df
 
 @st.cache_data(ttl=300)
 def get_part_store_mapping():
     try:
-        df_summary = load_sheet("SALES") # 요약 -> SALES 탭으로 변경
-        # 파트 데이터가 없다면 임시로 점포명 기준 생성
-        if '파트' in df_summary.columns:
-            mapping = df_summary.groupby('파트')['점포명'].unique().apply(list).to_dict()
+        df_sales = load_sheet("SALES")
+        # '파트' 열 찾기 (이름이 살짝 다를 수 있으므로 유연하게 검색)
+        part_col = next((c for c in df_sales.columns if '파트' in c), None)
+        store_col = next((c for c in df_sales.columns if '점포명' in c), None)
+        
+        if part_col and store_col:
+            # 결측치 제외
+            valid_df = df_sales.dropna(subset=[part_col, store_col])
+            mapping = valid_df.groupby(part_col)[store_col].unique().apply(list).to_dict()
+            return mapping
         else:
-            mapping = {"전체 점포": df_summary['점포명'].dropna().unique().tolist()}
-        return mapping
-    except Exception:
-        return {"테스트파트": ["강남본점", "홍대점"]}
+            return {"전체 점포": df_sales[store_col].dropna().unique().tolist()} if store_col else {"테스트파트": ["데이터없음"]}
+    except Exception as e:
+        return {"시스템 파트": ["점포 로드 실패"]}
+
+def clean_num(val):
+    """문자열에서 쉼표를 제거하고 숫자로 변환합니다."""
+    try:
+        return float(str(val).replace(',', '').strip())
+    except:
+        return 0.0
 
 @st.cache_data(ttl=300)
 def get_store_data(store_name):
     try:
-        # 실제 탭 이름으로 로드
         df_sales = load_sheet("SALES")
-        df_time = load_sheet("time")
-        df_item = load_sheet("units")
+        store_col = next(c for c in df_sales.columns if '점포명' in c)
+        store_sales = df_sales[df_sales[store_col] == store_name].iloc[0]
         
-        # 추가 데이터 로드 (시트가 없을 경우 예외처리)
-        try:
-            df_promo = load_sheet("promotion")
-            store_promo = df_promo[df_promo['점포명'] == store_name].to_dict('records')
-            if not store_promo:
-                store_promo = [{"행사명": "점포 특화 프로모션", "내용": "데이터가 없습니다."}]
-        except:
-            store_promo = [{"행사명": "임시 행사", "내용": "promotion 시트를 확인해주세요."}]
-            
-        try:
-            df_similar = load_sheet("O4O") # 유사상권 -> O4O 탭
-            # 상품명 또는 유사한 열 찾기
-            item_col = '상품명' if '상품명' in df_similar.columns else df_similar.columns[1]
-            similar_items = df_similar[df_similar['점포명'] == store_name][item_col].tolist()[:3]
-            if not similar_items:
-                similar_items = ["데이터 없음"]
-        except:
-            similar_items = ["임시 상품 1", "임시 상품 2", "임시 상품 3"]
-
-        # 점포 필터링
-        store_sales = df_sales[df_sales['점포명'] == store_name].iloc[0]
-        
-        # ── 스마트 데이터 추출 (평균 계산) ──
-        # '전체' 매출 컬럼 찾기
+        # ── 스마트 데이터 추출 (25년/26년 / 전체/치킨 필터링) ──
         total_25_cols = [c for c in df_sales.columns if '2025' in c and '전체' in c]
         total_26_cols = [c for c in df_sales.columns if '2026' in c and '전체' in c]
-        total_2605_col = [c for c in df_sales.columns if '202605' in c and '전체' in c]
+        total_2605_cols = [c for c in df_sales.columns if '202605' in c and '전체' in c]
         
-        # '치킨' 매출 컬럼 찾기
         chk_25_cols = [c for c in df_sales.columns if '2025' in c and '치킨' in c]
         chk_26_cols = [c for c in df_sales.columns if '2026' in c and '치킨' in c]
-        chk_2605_col = [c for c in df_sales.columns if '202605' in c and '치킨' in c]
+        chk_2605_cols = [c for c in df_sales.columns if '202605' in c and '치킨' in c]
 
-        # 데이터가 있으면 계산, 없으면 임의의 값(오류 방지용)
-        avg_total_25 = store_sales[total_25_cols].mean() if total_25_cols else 2000000
-        avg_total_26 = store_sales[total_26_cols].mean() if total_26_cols else 2200000
-        val_total_2605 = store_sales[total_2605_col[0]] if total_2605_col else avg_total_26
+        # 데이터 리스트를 숫자로 변환 후 평균 계산
+        avg_total_25 = np.mean([clean_num(store_sales[c]) for c in total_25_cols]) if total_25_cols else 0
+        avg_total_26 = np.mean([clean_num(store_sales[c]) for c in total_26_cols]) if total_26_cols else 0
+        val_total_2605 = clean_num(store_sales[total_2605_cols[0]]) if total_2605_cols else 0
 
-        avg_chk_25 = store_sales[chk_25_cols].mean() if chk_25_cols else 150000
-        avg_chk_26 = store_sales[chk_26_cols].mean() if chk_26_cols else 160000
-        val_chk_2605 = store_sales[chk_2605_col[0]] if chk_2605_col else avg_chk_26
+        avg_chk_25 = np.mean([clean_num(store_sales[c]) for c in chk_25_cols]) if chk_25_cols else 0
+        avg_chk_26 = np.mean([clean_num(store_sales[c]) for c in chk_26_cols]) if chk_26_cols else 0
+        val_chk_2605 = clean_num(store_sales[chk_2605_cols[0]]) if chk_2605_cols else 0
 
-        # 운영율/판매율 열 처리
-        op_col = [c for c in df_sales.columns if '운영' in c]
-        sales_col = [c for c in df_sales.columns if '판매' in c]
-        운영율 = float(store_sales[op_col[0]]) if op_col else 85.0
-        판매율 = float(store_sales[sales_col[0]]) if sales_col else 90.0
+        # 임시 기본값 (운영율/판매율은 operation 시트에 있을 것으로 추정, 우선 85로 둠)
+        운영율 = 85.0 
+        판매율 = 92.0
 
-        # 시간/품목 데이터 필터링 (컬럼명이 다를 수 있어 유연하게 처리)
-        time_data = df_time[df_time['점포명'] == store_name] if not df_time.empty else pd.DataFrame()
-        item_data = df_item[df_item['점포명'] == store_name] if not df_item.empty else pd.DataFrame()
-        
+        # ── 품목 (units) 데이터 처리 ──
+        try:
+            df_item = load_sheet("units")
+            u_store_col = next((c for c in df_item.columns if '점포명' in c), df_item.columns[0])
+            store_item_df = df_item[df_item[u_store_col] == store_name]
+            
+            item_col = next((c for c in store_item_df.columns if '품목' in c or '상품' in c), store_item_df.columns[1])
+            sales_col = next((c for c in store_item_df.columns if '매출' in c or '금액' in c), store_item_df.columns[2])
+            
+            # 숫자 정제 후 정렬
+            store_item_df['clean_sales'] = store_item_df[sales_col].apply(clean_num)
+            store_item_df = store_item_df.sort_values(by='clean_sales', ascending=False)
+            
+            품목명 = store_item_df[item_col].tolist()
+            품목매출 = store_item_df['clean_sales'].tolist()
+        except:
+            품목명 = ["데이터 부족"]
+            품목매출 = [0]
+
+        # ── 시간 (time) 데이터 처리 ──
+        try:
+            df_time = load_sheet("time")
+            t_store_col = next((c for c in df_time.columns if '점포명' in c), df_time.columns[0])
+            store_time_df = df_time[df_time[t_store_col] == store_name]
+            시간 = store_time_df.iloc[:, 1].apply(clean_num).tolist()
+            객수 = store_time_df.iloc[:, 2].apply(clean_num).tolist()
+        except:
+            시간 = list(range(9, 24))
+            객수 = [0]*15
+
         return {
-            "총매출_25평균": int(avg_total_25),
-            "총매출_26평균": int(avg_total_26),
-            "총매출_26년5월": int(val_total_2605),
-            "치킨_25평균": int(avg_chk_25),
-            "치킨_26평균": int(avg_chk_26),
-            "치킨_26년5월": int(val_chk_2605),
-            "운영율": 운영율,
-            "판매율": 판매율,
-            "시간": time_data.iloc[:, 1].astype(int).tolist() if len(time_data.columns)>1 else list(range(9,24)),
-            "객수": time_data.iloc[:, 2].astype(int).tolist() if len(time_data.columns)>2 else np.random.randint(10,80,15).tolist(),
-            "품목명": item_data.iloc[:, 1].astype(str).tolist() if len(item_data.columns)>1 else ["데이터 부족"],
-            "품목매출": item_data.iloc[:, 2].astype(int).tolist() if len(item_data.columns)>2 else [10000],
-            "프로모션": store_promo,
-            "유사상권_베스트": similar_items,
-            "is_mock": False
+            "총매출_25평균": int(avg_total_25), "총매출_26평균": int(avg_total_26), "총매출_26년5월": int(val_total_2605),
+            "치킨_25평균": int(avg_chk_25), "치킨_26평균": int(avg_chk_26), "치킨_26년5월": int(val_chk_2605),
+            "운영율": 운영율, "판매율": 판매율,
+            "시간": 시간, "객수": 객수,
+            "품목명": 품목명, "품목매출": 품목매출,
+            "프로모션": [], "유사상권_베스트": [], "is_mock": False
         }
     except Exception as e:
-        print(f"⚠️ 구글 시트 연동 실패. (에러: {e})")
-        # 📌 오류 발생 시 화면 구성을 보여주기 위한 임시 데이터
-        random.seed(store_name) 
-        mock_items = random.sample(["쏜살치킨", "바삭매콤", "점보닭다리", "바삭통다리", "치킨꼬치"], 5)
-        return {
-            "총매출_25평균": 2000000,
-            "총매출_26평균": 2200000,
-            "총매출_26년5월": 2300000,
-            "치킨_25평균": 150000,
-            "치킨_26평균": 180000,
-            "치킨_26년5월": 190000,
-            "운영율": 82.5,
-            "판매율": 91.0,
-            "시간": list(range(9, 24)),
-            "객수": np.random.randint(10, 80, size=15).tolist(),
-            "품목명": mock_items,
-            "품목매출": sorted(np.random.randint(50000, 300000, size=5).tolist(), reverse=True),
-            "프로모션": [{"행사명": "테스트 행사", "내용": "시트 오류로 임시 표시됨"}],
-            "유사상권_베스트": ["치킨꼬치", "소떡소떡", "바삭통다리"],
-            "is_mock": True
-        }
+        print(f"⚠️ 실제 데이터 연동 실패: {e}")
+        return {"is_mock": True, "에러내용": str(e)}
 
 # ── 4. UI 렌더링 ───────────────────────────────────────────
 st.title("🍗 치킨25 튀김 레이더")
@@ -194,7 +218,8 @@ with col_sel2:
 data = get_store_data(selected_store)
 
 if data.get("is_mock"):
-    st.warning("⚠️ 시트 양식 매핑 오류로 테스트 데이터가 표시중입니다. 백그라운드 터미널 창의 에러 메시지를 확인해주세요.")
+    st.error(f"⚠️ 점포 데이터를 계산하는 중 오류가 발생했습니다. (사유: {data.get('에러내용')})")
+    st.stop()
 
 def calc_growth(v25, v26):
     if v25 == 0: return 0
@@ -203,9 +228,8 @@ def calc_growth(v25, v26):
 total_growth = calc_growth(data["총매출_25평균"], data["총매출_26평균"])
 chicken_growth = calc_growth(data["치킨_25평균"], data["치킨_26평균"])
 
-# ── 5. 핵심 KPI 및 팩폭 코칭 ─────────────────────────────────
+# ── 5. 핵심 KPI ─────────────────────────────────
 st.markdown('<div class="section-title">📊 종합 실적 및 점포 진단</div>', unsafe_allow_html=True)
-
 c1, c2, c3, c4 = st.columns(4)
 with c1:
     st.markdown(f"""
@@ -214,7 +238,7 @@ with c1:
         <div class="kpi-value">{data['총매출_26평균']//10000:,}만원</div>
         <div class="{'kpi-delta-pos' if total_growth > 0 else 'kpi-delta-neg'}">{'▲' if total_growth > 0 else '▼'} {abs(total_growth):.1f}%</div>
         <div class="divider"></div>
-        <div style="font-size:0.95rem; color:#333;"><b>'26년 5월:</b> {data['총매출_26년5월']//10000:,}만원</div>
+        <div style="font-size:0.95rem;"><b>'26년 5월:</b> {data['총매출_26년5월']//10000:,}만원</div>
         <div class="sub-note">*산정기준: 25년/26년 월별 평균 비교</div>
     </div>""", unsafe_allow_html=True)
 with c2:
@@ -224,7 +248,7 @@ with c2:
         <div class="kpi-value">{data['치킨_26평균']//1000:,}천원</div>
         <div class="{'kpi-delta-pos' if chicken_growth > 0 else 'kpi-delta-neg'}">{'▲' if chicken_growth > 0 else '▼'} {abs(chicken_growth):.1f}%</div>
         <div class="divider"></div>
-        <div style="font-size:0.95rem; color:#333;"><b>'26년 5월:</b> {data['치킨_26년5월']//1000:,}천원</div>
+        <div style="font-size:0.95rem;"><b>'26년 5월:</b> {data['치킨_26년5월']//1000:,}천원</div>
         <div class="sub-note">*산정기준: 25년/26년 월별 평균 비교</div>
     </div>""", unsafe_allow_html=True)
 with c3:
@@ -236,68 +260,33 @@ with c4:
     <div class="kpi-value">{data['판매율']:.1f}%</div>
     <div class="sub-note">기준: 튀긴 수량 대비 판매량</div></div>""", unsafe_allow_html=True)
 
-if total_growth > 0 and chicken_growth < 0:
-    coach_msg = f"🚨 <b>기회 로스 발생!</b> 전체 평균 매출은 <b>{total_growth:.1f}% 늘었는데</b>, 치킨 매출은 <b>{abs(chicken_growth):.1f}% 감소</b>. 매대 진열량을 늘리세요!"
-    coach_class = "coach-warn"
-elif total_growth < 0 and chicken_growth > 0:
-    coach_msg = f"💡 <b>치킨이 효자입니다!</b> 전체 하락에도 치킨이 <b>{chicken_growth:.1f}% 상승</b>하며 방어 중입니다. 복수 진열을 강화하세요."
-    coach_class = "coach-good"
-elif total_growth < 0 and chicken_growth < 0:
-    coach_msg = f"⚠️ <b>전면적인 리프레시 필요!</b> 매출 동반 하락 중입니다. 피크타임 냄새 마케팅으로 발길을 확실히 잡으세요."
-    coach_class = "coach-warn"
-else:
-    coach_msg = f"🔥 <b>완벽한 상승 기류!</b> 매출 동반 상승 중입니다. 신상품을 도입해 추가 매출을 노려보세요."
-    coach_class = "coach-good"
-
-st.markdown(f'<div class="coach-card {coach_class}">{coach_msg}</div>', unsafe_allow_html=True)
-st.markdown("<hr style='border: 1px dashed #DDD;'>", unsafe_allow_html=True)
-
 # ── 6. 기존 차트 영역 ──────────────────────────────────────────
 col_left, col_right = st.columns([1.2, 1])
 
 with col_left:
-    st.markdown('<div class="section-title">⏱️ 시간대별 조리 타이밍</div>', unsafe_allow_html=True)
-    max_idx = np.argmax(data["객수"])
-    peak_hour_1 = data["시간"][max_idx]
-    
-    fig_time = go.Figure()
-    colors = ['#FFC300' if i == max_idx else '#EAEAEA' for i in range(len(data["시간"]))]
-    fig_time.add_trace(go.Bar(x=[f"{h}시" for h in data["시간"]], y=data["객수"], marker_color=colors, text=data["객수"], textposition='outside'))
-    fig_time.update_layout(plot_bgcolor='white', height=300, margin=dict(t=10, b=20, l=10, r=10), xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor='#F5F5F5'))
-    st.plotly_chart(fig_time, use_container_width=True)
-    
-    st.markdown(f'<div class="highlight-box">👨‍🍳 <b>AI 조리 지시서:</b> {peak_hour_1}시에 가장 붐빕니다. {peak_hour_1 - 1}시 30분부터 선조리를 시작하세요!</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">⏱️ 시간대별 방문객 및 조리 타이밍</div>', unsafe_allow_html=True)
+    if sum(data["객수"]) > 0:
+        max_idx = np.argmax(data["객수"])
+        peak_hour_1 = int(data["시간"][max_idx])
+        
+        fig_time = go.Figure()
+        colors = ['#FFC300' if i == max_idx else '#EAEAEA' for i in range(len(data["시간"]))]
+        fig_time.add_trace(go.Bar(x=[f"{int(h)}시" for h in data["시간"]], y=data["객수"], marker_color=colors, text=data["객수"], textposition='outside'))
+        fig_time.update_layout(plot_bgcolor='white', height=300, margin=dict(t=10, b=20, l=10, r=10), xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor='#F5F5F5'))
+        st.plotly_chart(fig_time, use_container_width=True)
+        st.markdown(f'<div class="highlight-box">👨‍🍳 <b>AI 조리 지시서:</b> {peak_hour_1}시에 가장 붐빕니다. {peak_hour_1 - 1}시 30분부터 선조리를 시작하세요!</div>', unsafe_allow_html=True)
+    else:
+        st.info("해당 점포의 시간대별 데이터가 없습니다.")
 
 with col_right:
-    st.markdown('<div class="section-title">🏆 점포 치킨 베스트 Top 5</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">🏆 우리 점포 치킨 베스트 Top 5</div>', unsafe_allow_html=True)
     top5_items = data["품목명"][:5]
     top5_sales = data["품목매출"][:5]
     
-    fig_items = go.Figure()
-    fig_items.add_trace(go.Bar(y=top5_items[::-1], x=top5_sales[::-1], orientation='h', marker=dict(color='#FF5733', opacity=0.8), text=[f"일매출 {v:,}원" for v in top5_sales[::-1]], textposition='inside', insidetextanchor='middle', textfont=dict(color='white', weight='bold')))
-    fig_items.update_layout(plot_bgcolor='white', height=300, margin=dict(t=10, b=20, l=10, r=10), xaxis=dict(showgrid=False, visible=False), yaxis=dict(showgrid=False, tickfont=dict(size=13, weight='bold')))
-    st.plotly_chart(fig_items, use_container_width=True)
-
-# ── 7. 프로모션 & 유사상권 인사이트 ─────────────────────
-st.markdown('<div class="section-title">✨ 점포 맞춤형 프로모션 & 유사상권 인사이트</div>', unsafe_allow_html=True)
-col_promo, col_sim = st.columns(2)
-
-with col_promo:
-    st.markdown('<div class="kpi-card">', unsafe_allow_html=True)
-    st.markdown("#### 🎁 현재 적용 가능한 프로모션")
-    st.markdown("<div class='sub-note' style='margin-bottom:10px;'>구글 시트 'promotion' 탭 연동 데이터</div>", unsafe_allow_html=True)
-    
-    for p in data["프로모션"]:
-        행사명 = p.get('행사명', '행사명 없음')
-        내용 = p.get('내용', '')
-        st.markdown(f"<div class='promo-item'>✔️ <b>{행사명}</b> <br><span style='color:#555; font-size:0.9rem;'>{내용}</span></div>", unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with col_sim:
-    st.markdown('<div class="kpi-card">', unsafe_allow_html=True)
-    st.markdown("#### 🏪 유사상권 베스트 상품 Top 3")
-    st.markdown("<div class='sub-note' style='margin-bottom:10px;'>비슷한 상권에서 잘 팔리는 상품 (O4O 탭 연동)</div>", unsafe_allow_html=True)
-    
-    for idx, item in enumerate(data["유사상권_베스트"]):
-        st.markdown(f"<div class='promo-item'><b>{idx+1}위.</b> {item}</div>", unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+    if sum(top5_sales) > 0:
+        fig_items = go.Figure()
+        fig_items.add_trace(go.Bar(y=top5_items[::-1], x=top5_sales[::-1], orientation='h', marker=dict(color='#FF5733', opacity=0.8), text=[f"일매출 {int(v):,}원" for v in top5_sales[::-1]], textposition='inside', insidetextanchor='middle', textfont=dict(color='white', weight='bold')))
+        fig_items.update_layout(plot_bgcolor='white', height=300, margin=dict(t=10, b=20, l=10, r=10), xaxis=dict(showgrid=False, visible=False), yaxis=dict(showgrid=False, tickfont=dict(size=13, weight='bold')))
+        st.plotly_chart(fig_items, use_container_width=True)
+    else:
+        st.info("해당 점포의 품목별 매출 데이터가 없습니다.")
