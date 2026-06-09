@@ -148,28 +148,24 @@ def get_store_data(store_name):
         운영율 = 85.0 
         판매율 = 92.0
 
-        # 2. 품목(units) 데이터 처리 (위치 대신 이름으로 스마트 검색)
+        # 2. 품목(units) 데이터 처리 (스마트 검색)
         try:
             df_item = load_sheet("units")
             u_store_col = next((c for c in df_item.columns if '점포명' in c), None)
             if u_store_col:
                 store_item_df = df_item[df_item[u_store_col] == store_name]
-                
-                # '품목'이나 '상품' 단어가 들어간 열 찾기
                 item_cols = [c for c in store_item_df.columns if '품목' in c or '상품' in c or '메뉴' in c]
-                # '매출'이나 '금액' 단어가 들어간 열 찾기
                 sales_cols = [c for c in store_item_df.columns if '매출' in c or '금액' in c or '수량' in c]
                 
                 if item_cols and sales_cols:
                     item_col = item_cols[0]
                     sales_col = sales_cols[0]
-                    
                     store_item_df['clean_sales'] = store_item_df[sales_col].apply(clean_num)
                     store_item_df = store_item_df.sort_values(by='clean_sales', ascending=False)
                     품목명 = store_item_df[item_col].tolist()
                     품목매출 = store_item_df['clean_sales'].tolist()
                 else:
-                    품목명 = ["'품목명' 열을 시트에서 찾지 못했습니다"]
+                    품목명 = ["'품목명' 열 확인 필요"]
                     품목매출 = [0]
             else:
                 품목명 = ["점포명 불일치"]
@@ -178,30 +174,24 @@ def get_store_data(store_name):
             품목명 = ["데이터 부족"]
             품목매출 = [0]
 
-        # 3. 시간(time) 데이터 처리 (위치 대신 이름으로 스마트 검색)
+        # 3. 시간(time) 데이터 처리 (스마트 검색)
         try:
             df_time = load_sheet("time")
             t_store_col = next((c for c in df_time.columns if '점포명' in c), None)
             if t_store_col:
                 store_time_df = df_time[df_time[t_store_col] == store_name]
-                
-                # '시간' 단어가 들어간 열 찾기
                 time_cols = [c for c in store_time_df.columns if '시간' in c or '시각' in c]
-                # '객수' 단어가 들어간 열 찾기
                 customer_cols = [c for c in store_time_df.columns if '객수' in c or '방문' in c]
                 
                 if time_cols and customer_cols:
                     시간 = store_time_df[time_cols[0]].apply(clean_num).tolist()
                     객수 = store_time_df[customer_cols[0]].apply(clean_num).tolist()
                 else:
-                    시간 = []
-                    객수 = []
+                    시간, 객수 = [], []
             else:
-                시간 = []
-                객수 = []
+                시간, 객수 = [], []
         except:
-            시간 = []
-            객수 = []
+            시간, 객수 = [], []
 
         return {
             "총매출_25평균": int(avg_total_25), "총매출_26평균": int(avg_total_26), "총매출_26년5월": int(val_total_2605),
@@ -209,7 +199,9 @@ def get_store_data(store_name):
             "운영율": 운영율, "판매율": 판매율,
             "시간": 시간, "객수": 객수,
             "품목명": 품목명, "품목매출": 품목매출,
-            "프로모션": [], "유사상권_베스트": [], "is_mock": False
+            "프로모션": [{"행사명": "프로모션 준비중", "내용": "데이터 연동 중"}], 
+            "유사상권_베스트": ["상품 데이터 준비중"], 
+            "is_mock": False
         }
     except Exception as e:
         print(f"⚠️ 실제 데이터 연동 실패: {e}")
@@ -244,6 +236,7 @@ chicken_growth = calc_growth(data["치킨_25평균"], data["치킨_26평균"])
 # ── 5. 핵심 KPI ─────────────────────────────────
 st.markdown('<div class="section-title">📊 종합 실적 및 점포 진단</div>', unsafe_allow_html=True)
 c1, c2, c3, c4 = st.columns(4)
+
 with c1:
     st.markdown(f"""
     <div class="kpi-card">
@@ -251,4 +244,92 @@ with c1:
         <div class="kpi-value">{data['총매출_26평균']//10000:,}만원</div>
         <div class="{'kpi-delta-pos' if total_growth > 0 else 'kpi-delta-neg'}">{'▲' if total_growth > 0 else '▼'} {abs(total_growth):.1f}%</div>
         <div class="divider"></div>
-        <div style="font-size:0.95rem;"><b>
+        <div style="font-size:0.95rem;"><b>'26년 5월:</b> {data['총매출_26년5월']//10000:,}만원</div>
+        <div class="sub-note">*산정기준: 25년/26년 월별 평균 비교</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with c2:
+    st.markdown(f"""
+    <div class="kpi-card">
+        <div class="kpi-label">치킨25 일매출 흐름 (YoY)</div>
+        <div class="kpi-value">{data['치킨_26평균']//1000:,}천원</div>
+        <div class="{'kpi-delta-pos' if chicken_growth > 0 else 'kpi-delta-neg'}">{'▲' if chicken_growth > 0 else '▼'} {abs(chicken_growth):.1f}%</div>
+        <div class="divider"></div>
+        <div style="font-size:0.95rem;"><b>'26년 5월:</b> {data['치킨_26년5월']//1000:,}천원</div>
+        <div class="sub-note">*산정기준: 25년/26년 월별 평균 비교</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with c3:
+    st.markdown(f"""
+    <div class="kpi-card">
+        <div class="kpi-label">튀김기 운영율</div>
+        <div class="kpi-value">{data['운영율']:.1f}%</div>
+        <div class="sub-note">목표: 85% 이상 유지</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with c4:
+    st.markdown(f"""
+    <div class="kpi-card">
+        <div class="kpi-label">치킨 판매율</div>
+        <div class="kpi-value">{data['판매율']:.1f}%</div>
+        <div class="sub-note">기준: 튀긴 수량 대비 판매량</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ── 6. 하단 차트 영역 ──────────────────────────────────────────
+col_left, col_right = st.columns([1.2, 1])
+
+with col_left:
+    st.markdown('<div class="section-title">⏱️ 시간대별 방문객 및 조리 타이밍</div>', unsafe_allow_html=True)
+    if data["객수"] and sum(data["객수"]) > 0:
+        max_idx = np.argmax(data["객수"])
+        peak_hour_1 = int(data["시간"][max_idx])
+        
+        fig_time = go.Figure()
+        colors = ['#FFC300' if i == max_idx else '#EAEAEA' for i in range(len(data["시간"]))]
+        fig_time.add_trace(go.Bar(x=[f"{int(h)}시" for h in data["시간"]], y=data["객수"], marker_color=colors, text=data["객수"], textposition='outside'))
+        fig_time.update_layout(plot_bgcolor='white', height=300, margin=dict(t=10, b=20, l=10, r=10), xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor='#F5F5F5'))
+        st.plotly_chart(fig_time, use_container_width=True)
+        st.markdown(f'<div class="highlight-box">👨‍🍳 <b>AI 조리 지시서:</b> {peak_hour_1}시에 가장 붐빕니다. {peak_hour_1 - 1}시 30분부터 선조리를 시작하세요!</div>', unsafe_allow_html=True)
+    else:
+        st.info("💡 구글 시트의 `time` 탭에 '시간'과 '객수'라는 이름의 열(Column)이 있는지 확인해 주세요.")
+
+with col_right:
+    st.markdown('<div class="section-title">🏆 우리 점포 치킨 베스트 Top 5</div>', unsafe_allow_html=True)
+    top5_items = data["품목명"][:5]
+    top5_sales = data["품목매출"][:5]
+    
+    if sum(top5_sales) > 0:
+        fig_items = go.Figure()
+        fig_items.add_trace(go.Bar(y=top5_items[::-1], x=top5_sales[::-1], orientation='h', marker=dict(color='#FF5733', opacity=0.8), text=[f"일매출 {int(v):,}원" for v in top5_sales[::-1]], textposition='inside', insidetextanchor='middle', textfont=dict(color='white', weight='bold')))
+        fig_items.update_layout(plot_bgcolor='white', height=300, margin=dict(t=10, b=20, l=10, r=10), xaxis=dict(showgrid=False, visible=False), yaxis=dict(showgrid=False, tickfont=dict(size=13, weight='bold')))
+        st.plotly_chart(fig_items, use_container_width=True)
+    else:
+        st.error("💡 구글 시트의 `units` 탭에 '품목'(또는 상품)과 '매출'이라는 이름의 열(Column)이 있는지 확인해 주세요.")
+
+# ── 7. 프로모션 & 유사상권 인사이트 ─────────────────────
+st.markdown('<div class="section-title">✨ 점포 맞춤형 프로모션 & 유사상권 인사이트</div>', unsafe_allow_html=True)
+col_promo, col_sim = st.columns(2)
+
+with col_promo:
+    st.markdown('<div class="kpi-card">', unsafe_allow_html=True)
+    st.markdown("#### 🎁 현재 적용 가능한 프로모션")
+    st.markdown("<div class='sub-note' style='margin-bottom:10px;'>점포별 맞춤 행사</div>", unsafe_allow_html=True)
+    
+    for p in data["프로모션"]:
+        행사명 = p.get('행사명', '행사명 없음')
+        내용 = p.get('내용', '')
+        st.markdown(f"<div class='promo-item'>✔️ <b>{행사명}</b> <br><span style='color:#555; font-size:0.9rem;'>{내용}</span></div>", unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with col_sim:
+    st.markdown('<div class="kpi-card">', unsafe_allow_html=True)
+    st.markdown("#### 🏪 유사상권 베스트 상품 Top 3")
+    st.markdown("<div class='sub-note' style='margin-bottom:10px;'>비슷한 상권에서 잘 팔리는 상품 (O4O 연동 예정)</div>", unsafe_allow_html=True)
+    
+    for idx, item in enumerate(data["유사상권_베스트"]):
+        st.markdown(f"<div class='promo-item'><b>{idx+1}위.</b> {item}</div>", unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
