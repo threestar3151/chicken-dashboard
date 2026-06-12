@@ -296,6 +296,7 @@ def get_store_data(store_name: str) -> dict:
                 "행사가격": p_price,
                 "정상가격": r_price,
                 "기간":     period,
+                "행사타입": str(r.get("행사타입(1)", "")).strip(),
                 "일매출":   daily,
             })
 
@@ -319,18 +320,14 @@ def get_store_data(store_name: str) -> dict:
         sdf_o = df_o[df_o[o_sc] == store_name] if o_sc else pd.DataFrame()
 
         if len(sdf_o) > 0 and o_sal:
-            o_row = sdf_o.iloc[0]
+            o_row   = sdf_o.iloc[0]
             o4o_val = clean_num(o_row[o_sal])
-            # 운영점 수
             ops_col = find_col(df_o.columns, ["운영점"])
             ops_cnt = int(clean_num(o_row[ops_col])) if ops_col else 0
-            sim_list = [{
-                "상품명": f"유사상권 치킨25 평균 일매출",
-                "일매출": o4o_val,
-                "ops":    ops_cnt,
-            }]
+            sim_list = [{"상품명": "유사상권 치킨25 평균 일매출",
+                         "일매출": o4o_val, "ops": ops_cnt}]
         else:
-            sim_list = [{"상품명": "O4O 데이터 없음", "일매출": 0, "ops": 0}]
+            sim_list = [{"상품명": "O4O 데이터 없음", "일매출": -1, "ops": 0}]
     except Exception as e:
         errors.append(f"O4O: {e}")
         sim_list = [{"상품명": f"오류: {e}", "일매출": 0, "ops": 0}]
@@ -529,9 +526,41 @@ with right:
         )
         st.plotly_chart(fig_i, use_container_width=True)
         st.markdown(
-            f'<div class="sub-note" style="padding-left:4px;">'
-            f'* units 탭 | 26년 3~5월 평균 일매출 기준</div>',
+            '<div class="sub-note" style="padding-left:4px;">'
+            '* units 탭 | 26년 3~5월 평균 일매출 기준</div>',
             unsafe_allow_html=True)
+
+        # ── 유사상권 베스트 상품 및 일매출 ──────────────────────────
+        st.markdown(
+            '<div style="margin-top:16px; font-size:1rem; font-weight:800;'
+            ' color:#2C3E50; border-top:2px solid #EEE; padding-top:12px;">'
+            '🏪 유사상권 베스트 상품 및 일매출</div>',
+            unsafe_allow_html=True)
+        st.markdown(
+            '<div class="sub-note" style="margin-bottom:8px;">'
+            '* units 탭 전 점포 일매출 합계 기준 | 유사상권 인기 상품 참고용</div>',
+            unsafe_allow_html=True)
+        try:
+            df_u_sim = load_sheet("units")
+            agg_sim = {}
+            for col in df_u_sim.columns:
+                if col.endswith(" 일매출") and not col.startswith("*"):
+                    prod_nm_sim = col[:-4].strip()
+                    total_sim   = df_u_sim[col].apply(clean_num).sum()
+                    if total_sim > 0:
+                        agg_sim[prod_nm_sim] = total_sim
+            top3_sim = sorted(agg_sim.items(), key=lambda x: x[1], reverse=True)[:3]
+            for i_sim, (nm_sim, tot_sim) in enumerate(top3_sim):
+                nm_s = nm_sim.replace("치킨25)","")
+                st.markdown(
+                    f'<div class="sim-row">'
+                    f'<span class="sim-num">{i_sim+1}위</span>'
+                    f'<span class="sim-name" title="{nm_sim}">{nm_s}</span>'
+                    f'<span class="sim-sales">일매출 {int(tot_sim):,}원</span>'
+                    f'</div>',
+                    unsafe_allow_html=True)
+        except Exception as e_sim:
+            st.info(f"유사상권 집계 오류: {e_sim}")
     else:
         st.info("units 시트에서 품목 데이터를 찾지 못했습니다.")
 
@@ -554,13 +583,24 @@ with cp:
     if selling:
         st.markdown("**▶ 판매 중인 행사 상품**", unsafe_allow_html=False)
         for p in selling:
-            nm   = p["상품명"].replace("치킨25)", "")
-            hp   = int(p["행사가격"]) if p["행사가격"] > 0 else "-"
-            sv   = int(p["일매출"])
-            period = f" ({p['기간']})" if p["기간"] not in ("nan","") else ""
+            nm      = p["상품명"].replace("치킨25)", "")
+            hp      = int(p["행사가격"]) if p["행사가격"] > 0 else "-"
+            sv      = int(p["일매출"])
+            period  = p["기간"] if p["기간"] not in ("nan","") else ""
+            타입    = p.get("행사타입","")
+            타입    = 타입 if 타입 not in ("nan","") else ""
+            # 행사 구분 태그 색상
+            타입색  = {"가격행사":"#E74C3C","1+1":"#8E44AD","덤행사":"#D35400",
+                       "기증행사":"#27AE60"}.get(타입, "#555")
+            타입_tag = (f'<span style="background:{타입색}; color:#fff;'
+                        f' font-size:.72rem; border-radius:4px; padding:1px 5px;'
+                        f' margin-left:5px;">{타입}</span>') if 타입 else ""
+            기간_tag = (f'<span style="font-size:.78rem; color:#888;'
+                        f' margin-left:6px;">({period})</span>') if period else ""
             st.markdown(
                 f'<div class="promo-row">'
-                f'<span class="promo-name" title="{p["상품명"]}">{nm}{period}</span>'
+                f'<span class="promo-name" title="{p["상품명"]}">'
+                f'{nm}{타입_tag}{기간_tag}</span>'
                 f'<span class="promo-price">행사가 {hp}원</span>'
                 f'<span class="promo-sales">일매출 {sv:,}원</span>'
                 f'</div>',
@@ -586,62 +626,83 @@ with co:
         '<div class="card-sub">O4O 탭 연동 | 유사상권 평균 일매출 벤치마크</div>',
         unsafe_allow_html=True)
 
-    store_chk = data["치킨_26평균"]   # 이 점포 치킨 일매출
-    o4o_val   = data["유사상권"][0]["일매출"] if data["유사상권"] else 0
+    store_chk = data["치킨_26평균"]
+    o4o_val   = data["유사상권"][0]["일매출"] if data["유사상권"] else -1
     ops_cnt   = data["유사상권"][0].get("ops", 0) if data["유사상권"] else 0
 
-    diff = store_chk - o4o_val
-    diff_pct = (diff / o4o_val * 100) if o4o_val > 0 else 0
-    color = "#E74C3C" if diff >= 0 else "#3498DB"
-    arrow = "▲" if diff >= 0 else "▼"
+    # ── O4O 평균 일매출 박스 ──────────────────────────────────────
+    if o4o_val < 0:
+        # 데이터 없음
+        st.markdown("""
+        <div style="background:#FFF8E1; border-radius:10px; padding:14px; margin-bottom:10px;">
+          <div style="font-size:.9rem; color:#795548; font-weight:600;">⚠️ O4O 유사상권 데이터 없음</div>
+          <div style="font-size:.8rem; color:#888; margin-top:4px;">
+            O4O 탭에 이 점포의 유사상권 평균 일매출이 입력되어 있지 않습니다.
+          </div>
+        </div>""", unsafe_allow_html=True)
+    elif o4o_val == 0:
+        st.markdown(f"""
+        <div style="background:#FFF8E1; border-radius:10px; padding:14px; margin-bottom:10px;">
+          <div style="font-size:.85rem; color:#555; margin-bottom:4px;">
+            유사상권 치킨25 평균 일매출
+            <span style="font-size:.75rem; color:#888;">
+              (유사 점포 {ops_cnt}개 | O4O 탭 기준)
+            </span>
+          </div>
+          <div style="font-size:1.6rem; font-weight:800; color:#BDC3C7;">0원</div>
+          <div style="font-size:.8rem; color:#E67E22; margin-top:4px;">
+            ⚠️ 유사상권 평균이 0원입니다. O4O 탭 데이터를 확인해 주세요.
+          </div>
+        </div>""", unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+        <div style="background:#EBF5FB; border-radius:10px; padding:14px; margin-bottom:10px;">
+          <div style="font-size:.85rem; color:#555; margin-bottom:4px;">
+            유사상권 치킨25 평균 일매출
+            <span style="font-size:.75rem; color:#888;">
+              (유사 점포 {ops_cnt}개 | O4O 탭 기준)
+            </span>
+          </div>
+          <div style="font-size:1.6rem; font-weight:800; color:#2980B9;">{int(o4o_val):,}원</div>
+        </div>""", unsafe_allow_html=True)
 
-    st.markdown(f"""
-    <div style="background:#EBF5FB; border-radius:10px; padding:14px; margin-bottom:10px;">
-      <div style="font-size:.85rem; color:#555; margin-bottom:4px;">유사상권 치킨25 평균 일매출</div>
-      <div style="font-size:1.6rem; font-weight:800; color:#2980B9;">{int(o4o_val):,}원</div>
-      <div style="font-size:.8rem; color:#777;">* 유사 점포 {ops_cnt}개 평균 | O4O 탭 기준</div>
-    </div>
-    <div style="background:#FFF; border:1px solid #DDD; border-radius:10px; padding:14px;">
-      <div style="font-size:.85rem; color:#555; margin-bottom:4px;">우리 점포 vs 유사상권</div>
-      <div style="font-size:1.3rem; font-weight:800; color:{color};">
-        {arrow} {abs(int(diff)):,}원 ({abs(diff_pct):.1f}%)
-      </div>
-      <div style="font-size:.8rem; color:#777; margin-top:4px;">
-        우리 점포: {int(store_chk):,}원 / 유사상권: {int(o4o_val):,}원
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # 유사상권 베스트 참고 — units 탭 전체 기준 상위 상품 표시
-    st.markdown(
-        "<div style='margin-top:14px; font-size:.9rem; font-weight:700; color:#2C3E50;'>"
-        "📌 전체 점포 치킨25 베스트 Top 3 (참고용)</div>",
-        unsafe_allow_html=True)
-    st.markdown(
-        "<div style='font-size:.75rem; color:#999; margin-bottom:8px;'>"
-        "* units 탭 전 점포 일매출 합계 기준</div>",
-        unsafe_allow_html=True)
-    try:
-        df_u_all = load_sheet("units")
-        u_sc_all = find_col(df_u_all.columns, ["점포명"])
-        agg = {}
-        for col in df_u_all.columns:
-            if col.endswith(" 일매출") and not col.startswith("*"):
-                prod_nm = col[:-4].strip()
-                total   = df_u_all[col].apply(clean_num).sum()
-                if total > 0:
-                    agg[prod_nm] = total
-        top3_all = sorted(agg.items(), key=lambda x: x[1], reverse=True)[:3]
-        for i, (nm, tot) in enumerate(top3_all):
-            nm_short = nm.replace("치킨25)","")
-            st.markdown(
-                f'<div class="sim-row">'
-                f'<span class="sim-num">{i+1}위</span>'
-                f'<span class="sim-name" title="{nm}">{nm_short}</span>'
-                f'<span class="sim-sales">합계 {int(tot):,}원</span>'
-                f'</div>',
-                unsafe_allow_html=True)
-    except Exception as e:
-        st.info(f"전체 집계 조회 실패: {e}")
+    # ── 우리 점포 vs 유사상권 비교 ────────────────────────────────
+    if o4o_val > 0:
+        diff     = store_chk - o4o_val
+        diff_pct = diff / o4o_val * 100
+        color    = "#E74C3C" if diff >= 0 else "#3498DB"
+        arrow    = "▲" if diff >= 0 else "▼"
+        msg_txt  = ("유사상권보다 높음 → 현재 운영 방향 유지" if diff >= 0
+                    else "유사상권보다 낮음 → 진열·조리 강화 필요")
+        st.markdown(f"""
+        <div style="background:#FFF; border:1px solid #DDD; border-radius:10px; padding:14px;">
+          <div style="font-size:.85rem; color:#555; margin-bottom:6px; font-weight:600;">
+            📌 우리 점포 vs 유사상권 비교
+            <span style="font-weight:400; font-size:.78rem; color:#888; margin-left:6px;">
+              (우리 점포 치킨25 일매출 ÷ 유사상권 평균 일매출 차이)
+            </span>
+          </div>
+          <div style="font-size:1.3rem; font-weight:800; color:{color};">
+            {arrow} {abs(int(diff)):,}원 ({abs(diff_pct):.1f}%)
+          </div>
+          <div style="font-size:.82rem; color:#555; margin-top:6px;">
+            우리 점포: <b>{int(store_chk):,}원</b> &nbsp;|&nbsp;
+            유사상권: <b>{int(o4o_val):,}원</b>
+          </div>
+          <div style="font-size:.8rem; color:{color}; margin-top:4px; font-weight:600;">
+            → {msg_txt}
+          </div>
+        </div>""", unsafe_allow_html=True)
+    elif o4o_val == 0:
+        st.markdown(f"""
+        <div style="background:#FFF; border:1px solid #DDD; border-radius:10px; padding:14px;">
+          <div style="font-size:.85rem; color:#555; margin-bottom:4px; font-weight:600;">
+            📌 우리 점포 vs 유사상권 비교
+          </div>
+          <div style="font-size:.9rem; color:#888;">
+            유사상권 데이터(O4O 탭)가 0원이어서 정확한 비교가 어렵습니다.<br>
+            우리 점포 치킨25 일매출: <b>{int(store_chk):,}원</b>
+          </div>
+        </div>""", unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
